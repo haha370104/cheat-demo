@@ -1,9 +1,10 @@
 //
 // Created by tomato on 2021/01/17.
 //
+#include <iostream>
+#include <stdexcept>
 #include "dll-inject.h"
 #include "../helper/helper.h"
-#include <iostream>
 
 using namespace std;
 
@@ -38,61 +39,54 @@ bool checkDllInProcess(DWORD dwPID, WCHAR *dllPath) {
 //dwPID         目标进程的PID
 //dllPath     被注入的dll的完整路径,注意：路径不要用“/”来代替“\\”
 bool ejectDll(DWORD dwPID, WCHAR *dllPath) {
-    bool bMore = false, bFound = false, bRet = false;
-    HANDLE hSnapshot = INVALID_HANDLE_VALUE;
-    HANDLE hProcess = nullptr;
+    HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, dwPID);
     MODULEENTRY32 me = {sizeof(me),};
-    LPTHREAD_START_ROUTINE pThreadProc = nullptr;
-    HMODULE hMod = nullptr;
-    TCHAR szProcName[MAX_PATH] = {0,};
+    HANDLE hProcess = nullptr;
 
-    if (INVALID_HANDLE_VALUE == (hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, dwPID))) {
-        _tprintf("EjectDll() : CreateToolhelp32Snapshot(%lu) failed!!! [%lu]\n",
-                 dwPID, GetLastError());
-        goto EJECTDLL_EXIT;
+    if (INVALID_HANDLE_VALUE == hSnapshot) {
+        return false;
     }
-    bMore = Module32First(hSnapshot, &me);
-    for (; bMore; bMore = Module32Next(hSnapshot, &me))//查找模块句柄
-    {
-        if (!wcscmp(getWC(me.szModule), dllPath) ||
-            !wcscmp(getWC(me.szExePath), dllPath)) {
-            bFound = true;
-            break;
+
+    try {
+        bool bFound = false;
+        for (bool bMore = Module32First(hSnapshot, &me); bMore; bMore = Module32Next(hSnapshot, &me))//查找模块句柄
+        {
+            if (!wcscmp(getWC(me.szModule), dllPath) ||
+                !wcscmp(getWC(me.szExePath), dllPath)) {
+                bFound = true;
+                break;
+            }
         }
-    }
-    if (!bFound) {
-        _tprintf("EjectDll() : There is not %s module in process(%lu) memory!!!\n",
-                 dllPath, dwPID);
-        goto EJECTDLL_EXIT;
-    }
-    if (!(hProcess = OpenProcess(PROCESS_ALL_ACCESS, false, dwPID))) {
-        _tprintf("EjectDll() : OpenProcess(%lu) failed!!! [%lu]\n",
-                 dwPID, GetLastError());
-        goto EJECTDLL_EXIT;
-    }
-    hMod = GetModuleHandle("kernel32.dll");
-    if (hMod == nullptr) {
-        _tprintf("EjectDll() : GetModuleHandle(\"kernel32.dll\") failed!!! [%lu]\n",
-                 GetLastError());
-        goto EJECTDLL_EXIT;
-    }
-    pThreadProc = (LPTHREAD_START_ROUTINE) GetProcAddress(hMod, "FreeLibrary");
-    if (pThreadProc == nullptr) {
-        _tprintf("EjectDll() : GetProcAddress(\"FreeLibrary\") failed!!! [%lu]\n",
-                 GetLastError());
-        goto EJECTDLL_EXIT;
-    }
-    if (!CreateRemoteThread(hProcess, nullptr, 0, pThreadProc, me.modBaseAddr, 0, nullptr)) {
-        _tprintf("EjectDll() : MyCreateRemoteThread() failed!!!\n");
-        goto EJECTDLL_EXIT;
-    }
-    bRet = true;
-    EJECTDLL_EXIT:
-    if (hProcess)
+        if (!bFound) {
+            throw std::invalid_argument("EjectDll() : There is not module in process memory!!!");
+        }
+        hProcess = OpenProcess(PROCESS_ALL_ACCESS, false, dwPID);
+        if (!hProcess) {
+            throw std::invalid_argument("EjectDll() : OpenProcess failed!!!");
+        }
+        HMODULE hMod = GetModuleHandle("kernel32.dll");
+        if (hMod == nullptr) {
+            throw std::invalid_argument("EjectDll() : GetModuleHandle(\"kernel32.dll\") failed!!! [%lu]");
+        }
+
+        auto pThreadProc = (LPTHREAD_START_ROUTINE) GetProcAddress(hMod, "FreeLibrary");
+        if (pThreadProc == nullptr) {
+            throw std::invalid_argument("EjectDll() : GetProcAddress(\"FreeLibrary\") failed!!!");
+        }
+        if (!CreateRemoteThread(hProcess, nullptr, 0, pThreadProc, me.modBaseAddr, 0, nullptr)) {
+            throw std::invalid_argument("EjectDll() : MyCreateRemoteThread() failed!!!");
+        }
+
         CloseHandle(hProcess);
-    if (hSnapshot != INVALID_HANDLE_VALUE)
         CloseHandle(hSnapshot);
-    return bRet;
+        return true;
+    } catch (const std::exception& e) {
+        if (hProcess)
+            CloseHandle(hProcess);
+        if (hSnapshot != INVALID_HANDLE_VALUE)
+            CloseHandle(hSnapshot);
+        return false;
+    }
 }
 
 //向指定的进程注入相应的模块
